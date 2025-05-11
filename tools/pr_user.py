@@ -3,10 +3,13 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-# Environment variables to set:
-# GITHUB_TOKEN - Your GitHub access token
-# REPOSITORY_URL - GitHub repository URL (e.g., https://github.com/facebook/react)
-# BRANCH_NAME - Repository branch name (e.g., main)
+# Suppress urllib3 warnings about LibreSSL compatibility
+warnings.filterwarnings('ignore', category=Warning, module='urllib3')
+
+# Global configuration variables
+GITHUB_TOKEN = ''
+REPOSITORY_URL = 'https://github.com/facebook/react'
+BRANCH_NAME = 'main'
 
 class FetchUserPullRequestsTool:
     """Tool to fetch pull requests associated with a specific user."""
