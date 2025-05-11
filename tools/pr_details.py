@@ -3,32 +3,32 @@ import os
 import warnings
 import json
 from typing import Dict, List, Any, Optional
+from dotenv import load_dotenv
 
-# Suppress urllib3 warnings about LibreSSL compatibility
-warnings.filterwarnings('ignore', category=Warning, module='urllib3')
-
-# Global configuration variables
-GITHUB_TOKEN = ''
-REPOSITORY_URL = 'https://github.com/facebook/react'
-BRANCH_NAME = 'main'
+# Load environment variables from .env file
+load_dotenv()
 
 class FetchPullRequestDetailsTool:
     """Tool to fetch detailed information about a specific pull request."""
     
-    def __init__(self, github_token: str = None, repo_url: str = None, branch: str = None):
-        """Initialize with GitHub token and repository URL.
+    def __init__(self, github_token: str = None, repo_owner: str = None, repo_name: str = None, branch: str = None):
+        """Initialize with GitHub token and repository information.
         
         Args:
             github_token: GitHub access token (will use global if None)
-            repo_url: Repository URL (will use global if None)
+            repo_owner: Repository owner (will use global if None)
+            repo_name: Repository name (will use global if None)
             branch: Repository branch (will use global if None)
         """
-        self.github_token = github_token or GITHUB_TOKEN
-        self.repo_url = repo_url or REPOSITORY_URL
-        self.branch = branch or BRANCH_NAME
+        self.github_token = github_token or os.getenv('GITHUB_TOKEN')
+        self.repo_owner = repo_owner or os.getenv('REPO_OWNER')
+        self.repo_name = repo_name or os.getenv('REPO_NAME')
+        self.branch = branch or os.getenv('BRANCH_NAME')
         
         if not self.github_token:
-            raise ValueError("GitHub access token not provided")
+            raise ValueError("GitHub access token not provided and not found in environment")
+        if not self.repo_owner or not self.repo_name:
+            raise ValueError("Repository owner and name not provided and not found in environment")
             
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for GitHub API requests."""
@@ -36,32 +36,6 @@ class FetchPullRequestDetailsTool:
             "Authorization": f"token {self.github_token}",
             "Accept": "application/vnd.github.v3+json"
         }
-    
-    def _parse_repo_info(self, repo_full_name: str = None) -> tuple:
-        """Parse repository owner and name from URL or full name."""
-        if repo_full_name:
-            parts = repo_full_name.split('/')
-            if len(parts) == 2:
-                return parts[0], parts[1]
-        
-        # Extract from repo URL if full name not provided
-        if self.repo_url:
-            # Handle formats like https://github.com/owner/repo or git@github.com:owner/repo.git
-            url = self.repo_url.rstrip('/')
-            if 'github.com' in url:
-                if url.startswith('git@'):
-                    # Format: git@github.com:owner/repo.git
-                    path = url.split('github.com:')[1]
-                else:
-                    # Format: https://github.com/owner/repo
-                    path = url.split('github.com/')[1]
-                
-                path = path.replace('.git', '')
-                parts = path.split('/')
-                if len(parts) >= 2:
-                    return parts[0], parts[1]
-        
-        return None, None
     
     def fetch_pull_request_details(
         self,
@@ -80,14 +54,11 @@ class FetchPullRequestDetailsTool:
             Dictionary containing detailed PR information
         """
         # Handle repository info
-        owner, repo = None, None
-        if repository_owner and repository_name:
-            owner, repo = repository_owner, repository_name
-        else:
-            owner, repo = self._parse_repo_info()
+        owner = repository_owner or self.repo_owner
+        repo = repository_name or self.repo_name
             
         if not owner or not repo:
-            raise ValueError("Repository information not provided and could not be parsed from global settings")
+            raise ValueError("Repository information not provided and could not be parsed from settings")
         
         # Get basic PR information
         pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"

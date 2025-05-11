@@ -4,9 +4,10 @@ import warnings
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
 
-# Suppress urllib3 warnings about LibreSSL compatibility
-warnings.filterwarnings('ignore', category=Warning, module='urllib3')
+# Load environment variables from .env file
+load_dotenv()
 
 # Global configuration variables
 GITHUB_TOKEN = ''
@@ -16,20 +17,24 @@ BRANCH_NAME = 'main'
 class ListRepositoryPullRequestsTool:
     """Tool to fetch a list of pull requests for a repository."""
     
-    def __init__(self, github_token: str = None, repo_url: str = None, branch: str = None):
-        """Initialize with GitHub token and repository URL.
+    def __init__(self, github_token: str = None, repo_owner: str = None, repo_name: str = None, branch: str = None):
+        """Initialize with GitHub token and repository information.
         
         Args:
             github_token: GitHub access token (will use global if None)
-            repo_url: Repository URL (will use global if None)
+            repo_owner: Repository owner (will use global if None)
+            repo_name: Repository name (will use global if None)
             branch: Repository branch (will use global if None)
         """
-        self.github_token = github_token or GITHUB_TOKEN
-        self.repo_url = repo_url or REPOSITORY_URL
-        self.branch = branch or BRANCH_NAME
+        self.github_token = github_token or os.getenv('GITHUB_TOKEN')
+        self.repo_owner = repo_owner or os.getenv('REPO_OWNER')
+        self.repo_name = repo_name or os.getenv('REPO_NAME')
+        self.branch = branch or os.getenv('BRANCH_NAME')
         
         if not self.github_token:
-            raise ValueError("GitHub access token not provided")
+            raise ValueError("GitHub access token not provided and not found in environment")
+        if not self.repo_owner or not self.repo_name:
+            raise ValueError("Repository owner and name not provided and not found in environment")
             
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for GitHub API requests."""
@@ -81,14 +86,11 @@ class ListRepositoryPullRequestsTool:
             Dictionary containing a list of basic PR objects
         """
         # Handle repository info
-        owner, repo = None, None
-        if repository_owner and repository_name:
-            owner, repo = repository_owner, repository_name
-        else:
-            owner, repo = self._parse_repo_info()
+        owner = repository_owner or self.repo_owner
+        repo = repository_name or self.repo_name
             
         if not owner or not repo:
-            raise ValueError("Repository information not provided and could not be parsed from global settings")
+            raise ValueError("Repository information not provided and could not be parsed from settings")
         
         # Calculate date range (default to 1 week)
         if date is None:
