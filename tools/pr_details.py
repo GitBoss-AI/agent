@@ -1,10 +1,70 @@
 import requests
 import os
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+def get_contributor_roles(activities: List[Dict[str, Any]]) -> List[str]:
+    """Determine contributor roles based on their activities."""
+    roles = set()
+    
+    for activity in activities:
+        activity_type = activity["type"]
+        if activity_type == "created PR":
+            roles.add("Author")
+        elif activity_type == "assigned":
+            roles.add("Assignee")
+        elif activity_type == "requested to review":
+            roles.add("Requested Reviewer")
+        elif activity_type.startswith("reviewed"):
+            roles.add("Reviewer")
+        elif activity_type == "merged":
+            roles.add("Merger")
+    
+    return sorted(list(roles))
+
+def extract_linked_issues(description: str) -> List[int]:
+    """Extract issue numbers from PR description using common patterns."""
+    patterns = [
+        r'Fixes #(\d+)',
+        r'Closes #(\d+)',
+        r'Resolves #(\d+)',
+        r'#(\d+)'
+    ]
+    
+    issue_numbers = set()
+    for pattern in patterns:
+        matches = re.finditer(pattern, description, re.IGNORECASE)
+        for match in matches:
+            issue_numbers.add(int(match.group(1)))
+    
+    return sorted(list(issue_numbers))
+
+def fetch_issue_details(issue_number: int, repo_owner: str, repo_name: str, headers: Dict[str, str]) -> Dict[str, Any]:
+    """Fetch details for a specific issue."""
+    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{issue_number}"
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        return None
+        
+    issue_data = response.json()
+    return {
+        "number": issue_data["number"],
+        "title": issue_data["title"],
+        "state": issue_data["state"],
+        "created_at": issue_data["created_at"],
+        "author": {
+            "username": issue_data["user"]["login"],
+            "profile_url": issue_data["user"]["html_url"]
+        },
+        "labels": [label["name"] for label in issue_data["labels"]],
+        "assignees": [assignee["login"] for assignee in issue_data["assignees"]],
+        "body": issue_data["body"]
+    }
 
 def fetch_pull_request_details(
     pr_number: int,
@@ -57,6 +117,15 @@ def fetch_pull_request_details(
     if files_response.status_code == 200:
         files_data = files_response.json()
         changed_files = [file["filename"] for file in files_data]
+    
+    # Get linked issues
+    linked_issues = []
+    if pr_data.get("body"):
+        issue_numbers = extract_linked_issues(pr_data["body"])
+        for issue_number in issue_numbers:
+            issue_details = fetch_issue_details(issue_number, repo_owner, repo_name, headers)
+            if issue_details:
+                linked_issues.append(issue_details)
     
     # Collect all contributor activities
     contributors = {}
@@ -145,6 +214,8 @@ def fetch_pull_request_details(
     # Sort activities by timestamp for each contributor
     for contributor in contributors.values():
         contributor["activities"].sort(key=lambda x: x["timestamp"])
+        # Add roles based on activities
+        contributor["roles"] = get_contributor_roles(contributor["activities"])
     
     # Format the result
     pr_details = {
@@ -153,6 +224,7 @@ def fetch_pull_request_details(
         "state": pr_data["state"],
         "created_at": pr_data["created_at"],
         "changed_files": changed_files,
+        "linked_issues": linked_issues,
         "contributors": contributors
     }
     
@@ -178,9 +250,20 @@ if __name__ == "__main__":
         for file in pr_details['changed_files']:
             print(f"- {file}")
         
+        if pr_details['linked_issues']:
+            print("\nLinked Issues:")
+            for issue in pr_details['linked_issues']:
+                print(f"\nIssue #{issue['number']}: {issue['title']}")
+                print(f"State: {issue['state']}")
+                print(f"Created by: {issue['author']['username']}")
+                print(f"Labels: {', '.join(issue['labels'])}")
+                print(f"Assignees: {', '.join(issue['assignees'])}")
+        
         print("\nContributor Activities:")
         for username, data in pr_details['contributors'].items():
+            roles = ", ".join(data['roles'])
             print(f"\n{username} ({data['profile_url']}):")
+            print(f"Roles: {roles}")
             for activity in data['activities']:
                 print(f"- {activity['type']} at {activity['timestamp']}")
                 if activity['content']:
