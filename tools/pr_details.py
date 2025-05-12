@@ -66,6 +66,32 @@ def fetch_issue_details(issue_number: int, repo_owner: str, repo_name: str, head
         "body": issue_data["body"]
     }
 
+def get_all_paginated_data(url: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Fetch all paginated data from GitHub API."""
+    all_data = []
+    page = 1
+    per_page = 100  # Maximum allowed by GitHub API
+    
+    while True:
+        paginated_url = f"{url}?page={page}&per_page={per_page}"
+        response = requests.get(paginated_url, headers=headers)
+        
+        if response.status_code != 200:
+            break
+            
+        data = response.json()
+        if not data:  # No more data
+            break
+            
+        all_data.extend(data)
+        page += 1
+        
+        # Check if we've reached the last page
+        if len(data) < per_page:
+            break
+            
+    return all_data
+
 def fetch_pull_request_details(
     pr_number: int,
     repo_owner: str,
@@ -100,15 +126,17 @@ def fetch_pull_request_details(
         
     pr_data = response.json()
     
-    # Get PR reviews
+    # Get PR reviews with pagination
     reviews_url = f"{url}/reviews"
-    reviews_response = requests.get(reviews_url, headers=headers)
-    reviews_data = reviews_response.json() if reviews_response.status_code == 200 else []
+    reviews_data = get_all_paginated_data(reviews_url, headers)
     
-    # Get PR comments
+    # Get PR comments with pagination
     comments_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments"
-    comments_response = requests.get(comments_url, headers=headers)
-    comments_data = comments_response.json() if comments_response.status_code == 200 else []
+    comments_data = get_all_paginated_data(comments_url, headers)
+    
+    # Get review comments (comments on specific lines) with pagination
+    review_comments_url = f"{url}/comments"
+    review_comments_data = get_all_paginated_data(review_comments_url, headers)
     
     # Get changed files
     files_url = f"{url}/files"
@@ -135,7 +163,7 @@ def fetch_pull_request_details(
     contributors[author] = {
         "activities": [{
             "type": "created PR",
-            "content": None,
+            "content": pr_data.get("body", ""),  # Include PR description
             "timestamp": pr_data["created_at"]
         }],
         "profile_url": pr_data["user"]["html_url"]
@@ -169,7 +197,7 @@ def fetch_pull_request_details(
             "timestamp": pr_data["updated_at"]
         })
     
-    # Add reviews
+    # Add reviews with full content
     for review in reviews_data:
         username = review["user"]["login"]
         if username not in contributors:
@@ -180,10 +208,28 @@ def fetch_pull_request_details(
         contributors[username]["activities"].append({
             "type": f"reviewed ({review['state']})",
             "content": review.get("body", ""),
-            "timestamp": review["submitted_at"]
+            "timestamp": review["submitted_at"],
+            "review_id": review["id"]
         })
     
-    # Add comments
+    # Add review comments (comments on specific lines)
+    for comment in review_comments_data:
+        username = comment["user"]["login"]
+        if username not in contributors:
+            contributors[username] = {
+                "activities": [],
+                "profile_url": comment["user"]["html_url"]
+            }
+        contributors[username]["activities"].append({
+            "type": "review comment",
+            "content": comment["body"],
+            "timestamp": comment["created_at"],
+            "path": comment["path"],
+            "line": comment.get("line"),
+            "position": comment.get("position")
+        })
+    
+    # Add general comments
     for comment in comments_data:
         username = comment["user"]["login"]
         if username not in contributors:
@@ -239,35 +285,36 @@ if __name__ == "__main__":
             repo_owner="facebook",
             repo_name="react"
         )
+        print(pr_details)
         
-        print("\nPull Request Information:")
-        print(f"Title: {pr_details['title']}")
-        print(f"State: {pr_details['state']}")
-        print(f"Created: {pr_details['created_at']}")
-        print(f"\nDescription:\n{pr_details['description']}")
+        # print("\nPull Request Information:")
+        # print(f"Title: {pr_details['title']}")
+        # print(f"State: {pr_details['state']}")
+        # print(f"Created: {pr_details['created_at']}")
+        # print(f"\nDescription:\n{pr_details['description']}")
         
-        print("\nChanged Files:")
-        for file in pr_details['changed_files']:
-            print(f"- {file}")
+        # print("\nChanged Files:")
+        # for file in pr_details['changed_files']:
+        #     print(f"- {file}")
         
-        if pr_details['linked_issues']:
-            print("\nLinked Issues:")
-            for issue in pr_details['linked_issues']:
-                print(f"\nIssue #{issue['number']}: {issue['title']}")
-                print(f"State: {issue['state']}")
-                print(f"Created by: {issue['author']['username']}")
-                print(f"Labels: {', '.join(issue['labels'])}")
-                print(f"Assignees: {', '.join(issue['assignees'])}")
+        # if pr_details['linked_issues']:
+        #     print("\nLinked Issues:")
+        #     for issue in pr_details['linked_issues']:
+        #         print(f"\nIssue #{issue['number']}: {issue['title']}")
+        #         print(f"State: {issue['state']}")
+        #         print(f"Created by: {issue['author']['username']}")
+        #         print(f"Labels: {', '.join(issue['labels'])}")
+        #         print(f"Assignees: {', '.join(issue['assignees'])}")
         
-        print("\nContributor Activities:")
-        for username, data in pr_details['contributors'].items():
-            roles = ", ".join(data['roles'])
-            print(f"\n{username} ({data['profile_url']}):")
-            print(f"Roles: {roles}")
-            for activity in data['activities']:
-                print(f"- {activity['type']} at {activity['timestamp']}")
-                if activity['content']:
-                    print(f"  Content: {activity['content']}")
+        # print("\nContributor Activities:")
+        # for username, data in pr_details['contributors'].items():
+        #     roles = ", ".join(data['roles'])
+        #     print(f"\n{username} ({data['profile_url']}):")
+        #     print(f"Roles: {roles}")
+        #     for activity in data['activities']:
+        #         print(f"- {activity['type']} at {activity['timestamp']}")
+        #         if activity['content']:
+        #             print(f"  Content: {activity['content']}")
             
     except Exception as e:
         print(f"Error: {str(e)}")

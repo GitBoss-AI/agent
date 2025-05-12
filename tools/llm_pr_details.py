@@ -16,9 +16,10 @@ load_dotenv()
 
 
 class PRAnalysis(BaseModel):
-    prSummary: str = Field(description="A concise summary of the PR purpose and changes")
-    contributionAnalysis: str = Field(description="A concise analysis of each contributor's activities and roles")
-    linkedIssuesSummary: Optional[str] = Field(None, description="A summary of any linked issues, if present")
+    prSummary: str = Field(description="A concise summary of the PR's purpose based on its title and description")
+    linkedIssuesSummary: Optional[str] = Field(None, description="A brief summary of any linked issues, if present")
+    discussionSummary: str = Field(description="A brief summary of the discussion focusing on contributors and their activities")
+    contributionAnalysis: str = Field(description="A brief summary of contributors' contributions to this PR and their roles (assignments, comments, reviews, merges, comment reviews)")
 
 def analyze_pr_contributions(pr_details: Dict[str, Any]) -> PRAnalysis:
     """
@@ -36,37 +37,51 @@ def analyze_pr_contributions(pr_details: Dict[str, Any]) -> PRAnalysis:
     system_prompt = """
 You are analyzing GitHub pull request data with a specific structure. The data includes:
 
-1. Basic PR Information:
-   - title: The title of the PR
-   - description: Full description of the PR
-   - state: Current state (open, closed, merged)
-   - created_at: When the PR was created
-
-2. Changed Files:
-   - List of files modified in the PR
-
-3. Linked Issues:
-   - number: Issue number
-   - title: Issue title
-   - state: Issue state
-   - created_at: When the issue was created
-   - author: The username who created the issue
-   - labels: Issue labels
-   - assignees: People assigned to the issue
-   - body: Issue description
-
-4. Contributors:
-   - Each contributor has:
-     - activities: List of actions they performed (created PR, commented, reviewed, etc.)
-     - profile_url: Link to their GitHub profile
-     - roles: Their roles in the PR (Author, Reviewer, Assignee, etc.)
+{
+    "title": str,  # Title of the pull request
+    "description": str,  # Full description/body of the PR
+    "state": str,  # Current state of PR (open, closed, merged)
+    "created_at": str,  # ISO timestamp of PR creation
+    "changed_files": List[str],  # List of file paths that were modified
+    
+    "linked_issues": List[{
+        "number": int,  # Issue number
+        "title": str,  # Issue title
+        "state": str,  # Issue state (open, closed)
+        "created_at": str,  # Issue creation timestamp
+        "author": {
+            "username": str,  # Author's GitHub username
+            "profile_url": str  # Author's GitHub profile URL
+        },
+        "labels": List[str],  # List of issue labels
+        "assignees": List[str],  # List of assigned usernames
+        "body": str  # Full issue description
+    }],
+    
+    "contributors": {
+        "username": {  # GitHub username as key
+            "activities": List[{
+                "type": str,  # Type of activity (created PR, reviewed, commented, etc.)
+                "content": str,  # Full text content of the activity
+                "timestamp": str,  # When the activity occurred
+                "review_id": int,  # Present only for reviews
+                "path": str,  # Present only for review comments (file path)
+                "line": int,  # Present only for review comments (line number)
+                "position": int  # Present only for review comments (position in diff)
+            }],
+            "roles": List[str],  # List of roles (Author, Reviewer, Assignee, etc.)
+            "profile_url": str  # Contributor's GitHub profile URL
+        }
+    }
+}
 
 Your task is to provide:
 1. A concise summary of the PR's purpose based on its title and description
-2. A clear analysis of each contributor's activities, highlighting who did what (assignments, comments, reviews, merges)
-3. A brief summary of any linked issues
+2. A brief summary of any linked issues
+3. A breif summmary of the discussion focusing on contrubitors and their activities
+4. Breif summary of contrubitors contrubition to this PR and thier roles (assignments, comments, reviews, merges, comment reviews)
 
-Keep your analysis factual, specific about who did what, and focused on the collaborative process.
+If you are refering to contributor's activities, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold. Make the links another color. Provide the the output in markdown format. only provide me the md file without any other text.
 """
     
     try:
