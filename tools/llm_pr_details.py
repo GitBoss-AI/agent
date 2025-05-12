@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import os
 from dotenv import load_dotenv
-from pr_details import fetch_pull_request_details
+from tools.pr_details import fetch_pull_request_details
 
 pr_details = fetch_pull_request_details(
 pr_number=33165,
