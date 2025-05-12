@@ -81,7 +81,7 @@ Your task is to provide:
 3. A breif summmary of the discussion focusing on contrubitors and their activities
 4. Breif summary of contrubitors contrubition to this PR and thier roles (assignments, comments, reviews, merges, comment reviews)
 
-If you are refering to contributor's activities, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold. Make the links another color. Provide the the output in markdown format. only provide me the md file without any other text.
+If you are refering to contributor's activities, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold. If a contrubutor is assigned to any and has not mentioned this in the contribution analysis yet, please do so. Make the links another color. Provide the the output in markdown format. only provide me the md file without any other text.
 """
     
     try:
