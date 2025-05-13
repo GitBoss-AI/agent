@@ -4,6 +4,12 @@ This tool fetches and analyzes GitHub contributor activity using the GitHub API 
 
 ## Setup
 
+1. Create and run a python virtual environment:
+   ```
+   python -m venv venv
+   source venv/bin/activate
+   ```
+
 1. Install the required dependencies:
    ```
    pip install -r requirements.txt
