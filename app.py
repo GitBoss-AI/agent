@@ -322,32 +322,6 @@ async def list_repository_contributors_endpoint(
 # --- Run Instructions (as before) ---
 
 # --- Github API endpoints ---
-@app.get("/repo/dashboard-data", summary="All Dashboard Data")
-async def get_all_dashboard_data(
-    owner: str = Query(...),
-    repo: str = Query(...),
-    range: str = Query("week", regex="^(week|month|quarter)$"),
-    time_range: str = Query("week", regex="^(week|month|quarter)$"),
-    limit: int = Query(10)
-):
-    try:
-        results = await asyncio.gather(
-            get_repo_stats(owner, repo, range),
-            get_top_contributors_stats(owner, repo, range, limit),
-            get_team_activity(owner, repo, time_range),
-            get_recent_activity(owner, repo)
-        )
-        return {
-            "repoStats": results[0],
-            "contributors": results[1],
-            "timeline": results[2],
-            "recentActivity": results[3]
-        }
-    except Exception as e:
-        logger.error(f"Error during parallel dashboard fetch: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch dashboard data.")
-
-
 @app.get("/repo/stats", summary="Repository Monthly Stats", description="Returns commit, PR, issue, and review stats for the last month and % difference from the month before.")
 async def get_repo_stats(
     owner: str = Query(..., description="GitHub repository owner"),
