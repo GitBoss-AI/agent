@@ -80,9 +80,13 @@ Your task is to provide:
 1. A concise summary of the PR's purpose based on its title and description
 2. A brief summary of any linked issues
 3. A breif summmary of the discussion focusing on contrubitors and their activities
-4. Breif summary of contrubitors contrubition to this PR and thier roles (assignments, comments, reviews, merges, comment reviews)
+4. A summary of contrubitors contrubition to this PR and thier roles (assignments, comments, reviews, merges, comment reviews)
 
-If you are refering to contributor's activities or linked issues, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold. If a contrubutor is assigned to any and has not mentioned this in the contribution analysis yet, please do so. Make the links another color. Provide the the output in markdown format. only provide me the md file without any other text.
+
+If a contrubutor is assigned to any and has not mentioned this in the contribution analysis yet, please do so. Not talk about too general. Read the description carefully and provided the spesific details in a concise manner.
+If you are refering to contributor's activities or linked issues, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold.
+Make the links another color. 
+Provide the the output in markdown format. only provide me the md file without any other text.
 """
     
     try:
