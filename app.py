@@ -8,12 +8,15 @@ from dotenv import load_dotenv
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Security
+from fastapi import FastAPI, Depends, HTTPException, Query, Security, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic import BaseModel
 from datetime import datetime, timedelta  # Ensure datetime is imported
+
+from starlette.responses import JSONResponse
+
 from websocket_handler import WebSocketHandler
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
@@ -165,6 +168,10 @@ class ContributorItem(BaseModel):
     contributions: int
     avatar_url: Optional[str] = Field(None, examples=["https://avatars.githubusercontent.com/u/1?v=4"])
     profile_url: str = Field(..., examples=["https://github.com/octocat"])
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 # --- API Endpoints ---
 
@@ -400,7 +407,7 @@ async def get_repo_stats(
         raise HTTPException(status_code=500, detail="Failed to fetch repository stats.")
 
 
-@app.get("/repo/contributors/stats", summary="Top Contributors Stats")
+@app.get("/repo/contributor-stats", summary="Top Contributors Stats")
 async def get_top_contributors_stats(
         owner: str = Query(...),
         repo: str = Query(...),
@@ -609,7 +616,8 @@ async def get_recent_activity(
                 "type": "commit",
                 "username": author,
                 "message": msg,
-                "timestamp": ts
+                "timestamp": ts,
+                "url": commit.get("html_url")
             })
 
     # --- PRs ---
@@ -621,7 +629,8 @@ async def get_recent_activity(
                 "type": "pr",
                 "username": pr["user"]["login"],
                 "message": f"{pr['user']['login']} {pr['state']} PR: {pr['title']}",
-                "timestamp": pr["created_at"]
+                "timestamp": pr["created_at"],
+                "url": pr["html_url"]
             })
 
     # --- Reviews ---
@@ -637,7 +646,8 @@ async def get_recent_activity(
                         "type": "review",
                         "username": review["user"]["login"],
                         "message": f"{review['user']['login']} reviewed PR #{pr_number}",
-                        "timestamp": review["submitted_at"]
+                        "timestamp": review["submitted_at"],
+                        "url": f"https://github.com/{owner}/{repo}/pull/{pr_number}#pullrequestreview-{review['id']}"
                     })
 
     # Sort all activity by timestamp descending
@@ -646,6 +656,19 @@ async def get_recent_activity(
     # Return last 5 entries
     return {"activity": activity_log[:5]}
 
+
+# --- Dummy login endpoint ---
+@app.post("/login", summary="Basic login accepting any credentials")
+async def login(request: LoginRequest = Body(...)):
+    logger.info(f"Login accepted for user: {request.username}")
+    return JSONResponse(content={
+        "message": "Login successful.",
+        "username": request.username
+    })
+
+@app.options("/login")
+async def options_login():
+    return JSONResponse(content={"message": "OK"})
 
 # --- Health Check Endpoint (as before) ---
 @app.get("/health", summary="Health Check", description="Simple health check endpoint.")

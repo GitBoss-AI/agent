@@ -3,13 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import os
 from dotenv import load_dotenv
-from tools.pr_details import fetch_pull_request_details
-
-pr_details = fetch_pull_request_details(
-pr_number=33165,
-repo_owner="facebook",
-repo_name="react"
-)
+from pr_details import fetch_pull_request_details
 
 load_dotenv()
 
@@ -18,7 +12,7 @@ load_dotenv()
 class PRAnalysis(BaseModel):
     prSummary: str = Field(description="A concise summary of the PR's purpose based on its title and description")
     linkedIssuesSummary: Optional[str] = Field(None, description="A brief summary of any linked issues, if present")
-    discussionSummary: str = Field(description="A brief summary of the discussion focusing on contributors and their activities")
+    # discussionSummary: str = Field(description="A brief summary of the discussion focusing on contributors and their activities")
     contributionAnalysis: str = Field(description="A brief summary of contributors' contributions to this PR and their roles (assignments, comments, reviews, merges, comment reviews)")
 
 def analyze_pr_contributions(pr_details: Dict[str, Any]) -> PRAnalysis:
@@ -79,14 +73,13 @@ You are analyzing GitHub pull request data with a specific structure. The data i
 Your task is to provide:
 1. A concise summary of the PR's purpose based on its title and description
 2. A brief summary of any linked issues
-3. A breif summmary of the discussion focusing on contrubitors and their activities
-4. A summary of contrubitors contrubition to this PR and thier roles (assignments, comments, reviews, merges, comment reviews)
+3. A summary of contributors contribution to this PR. Write the contributors' roles after their name in parentheses, write the category (feature additions, bug fixes, refactoring, documentation, commenting, reviewing, merging, etc.,) before explaining any contribution with bullet points under the contributor's name.
 
 
-If a contrubutor is assigned to any and has not mentioned this in the contribution analysis yet, please do so. Not talk about too general. Read the description carefully and provided the spesific details in a concise manner.
-If you are refering to contributor's activities or linked issues, make sure you provide the url link as a href link on its name. Provide the code piecec issue numbers contubitor names as a bold.
+If a contrubutor is assigned to any and has not mentioned this in the contribution analysis yet, please do so. Do not talk too general. Read the description carefully and provide the spesific details in a concise manner.
+If you are referring to contributors or linked issues, make sure you provide the url link as a href link on its name. Provide the categories, code pieces, issue numbers, contributor names as a bold.
 Make the links another color. 
-Provide the the output in markdown format. only provide me the md file without any other text.
+Provide the output in markdown format. Only provide the md file without any other text.
 """
     
     try:
@@ -189,10 +182,10 @@ if __name__ == "__main__":
         }
     }
     pr_details2 = fetch_pull_request_details(
-pr_number=33165,
-repo_owner="facebook",
-repo_name="react"
-)
+        pr_number=33165,
+        repo_owner="facebook",
+        repo_name="react"
+    )
     print(pr_details2)
     
     analysis = analyze_pr_contributions(pr_details2)
