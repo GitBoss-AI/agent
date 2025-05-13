@@ -22,6 +22,11 @@ from websocket_handler import WebSocketHandler
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from starlette.types import Scope, Receive, Send
+from tools.get_repo_issues import get_repo_issues
+from pydantic import BaseModel, Field
+from typing import List, Optional, Any, Dict # Ensure Dict is imported
+from datetime import datetime
+
 
 
 # Load environment variables
@@ -174,6 +179,39 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+
+class IssueUser(BaseModel):
+    login: str
+    id: int
+    html_url: str
+    avatar_url: str
+
+class IssueLabel(BaseModel):
+    name: str
+    color: str
+
+class IssueItem(BaseModel):
+    id: int
+    number: int
+    title: str
+    body: Optional[str] = None
+    state: str
+    created_at: datetime
+    updated_at: datetime
+    closed_at: Optional[datetime] = None
+    html_url: str
+    user: IssueUser
+    labels: List[IssueLabel]
+
+class RepoIssuesResponse(BaseModel):
+    repository: str
+    time_period: str
+    state_filter: str
+    total_issues: int
+    issues: List[IssueItem]
+    error: Optional[str] = None # To handle potential errors from the script
+    status_code: Optional[int] = None # To handle potential errors from the script
+    details: Optional[str] = None # To handle potential errors from the script
 # --- API Endpoints ---
 
 @app.get("/health", summary="Health Check")
@@ -684,6 +722,9 @@ async def get_recent_activity(
     return {"activity": activity_log[:5]}
 
 
+
+
+
 # --- Dummy login endpoint ---
 @app.post("/login", summary="Basic login accepting any credentials")
 async def login(request: LoginRequest = Body(...)):
@@ -710,3 +751,62 @@ async def websocket_endpoint(scope: Scope, receive: Receive, send: Send):
 
 # --- How to Run (as before) ---
 # uvicorn app:app --host 0.0.0.0 --port 8003 --reload
+
+
+@app.get(
+    "/repository-issues/",
+    response_model=RepoIssuesResponse, # Use the Pydantic model
+    summary="List Repository Issues by Date Range and State",
+    description="Fetches issues from a GitHub repository within a specified time range and state."
+)
+async def list_repository_issues_endpoint(
+    repo_owner: str = Query(..., description="Repository owner", example="facebook"),
+    repo_name: str = Query(..., description="Repository name", example="react"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
+    state: Optional[str] = Query("all", description="Filter by issue state", enum=["all", "open", "closed"]),
+    # If you're using authentication, uncomment the next line
+    # current_user: dict = Depends(get_current_user) # Assuming you have a get_current_user dependency
+):
+    # logger.info(f"User '{current_user['username']}' requesting issues for {repo_owner}/{repo_name} from {start_date} to {end_date}, state: {state}")
+    logger.info(f"Requesting issues for {repo_owner}/{repo_name} from {start_date} to {end_date}, state: {state}") # If no auth
+
+    try:
+        # Basic date validation (optional, as your script handles it, but good for early exit)
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
+        if datetime.strptime(end_date, "%Y-%m-%d") < datetime.strptime(start_date, "%Y-%m-%d"):
+            raise ValueError("End date must be after start date.")
+
+        issues_data = get_repo_issues(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            start_date=start_date,
+            end_date=end_date,
+            state=state
+        )
+
+        if "error" in issues_data:
+             # Log the error from the tool
+            logger.error(f"Error from get_repo_issues for {repo_owner}/{repo_name}: {issues_data.get('error')} - Status: {issues_data.get('status_code')} - Details: {issues_data.get('details')}")
+            # Re-raise as HTTPException or return a specific Pydantic model with error details
+            # For simplicity, we'll let the Pydantic model handle the error fields if present.
+            # However, it's often better to raise an HTTPException for client clarity.
+            # Example:
+            # raise HTTPException(
+            #     status_code=issues_data.get("status_code", 500), 
+            #     detail=issues_data.get("error", "Failed to fetch issues.")
+            # )
+            # For now, we'll assume the RepoIssuesResponse model can carry error details
+            # If using the model to carry errors, make sure the frontend checks for the 'error' field.
+            return RepoIssuesResponse(**issues_data)
+
+        logger.info(f"Successfully fetched {issues_data.get('total_issues', 0)} issues for {repo_owner}/{repo_name}.")
+        return RepoIssuesResponse(**issues_data)
+
+    except ValueError as ve:
+        logger.error(f"Validation error for issues request {repo_owner}/{repo_name}: {str(ve)}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Unexpected error fetching issues for {repo_owner}/{repo_name}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {type(e).__name__}")
