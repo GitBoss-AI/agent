@@ -87,25 +87,6 @@ class PRListItem(BaseModel):
     url: str
     created_at: datetime
 
-# --- JWT Authentication Setup (as before) ---
-jwt_validator = JWTValidator()
-bearer_scheme = HTTPBearer()
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
-) -> Dict[str, Any]:
-    token = credentials.credentials
-    logger.debug(f"Attempting to validate token: {token[:20]}...")
-    payload = jwt_validator.validate_token(token)
-    if payload is None:
-        logger.warning("Invalid or expired token provided for API request.")
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    logger.info(f"API request authenticated for user: {payload.get('username', 'Unknown User')}, ID: {payload.get('sub')}")
-    return payload
-
 # --- Existing /analyze-pr/ Endpoint (as before) ---
 @app.get(
     "/analyze-pr/",
@@ -117,9 +98,7 @@ async def analyze_pull_request_endpoint(
     pr_number: int = Query(..., description="The Pull Request number", example=33165),
     repo_owner: str = Query(..., description="The owner of the repository (e.g., 'facebook')", example="facebook"),
     repo_name: str = Query(..., description="The name of the repository (e.g., 'react')", example="react"),
-    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    logger.info(f"User '{current_user.get('username')}' (ID: {current_user.get('sub')}) requesting analysis for PR #{pr_number} in {repo_owner}/{repo_name}")
     try:
         logger.debug(f"Fetching details for PR #{pr_number}...")
         pr_details_data = fetch_pull_request_details(
@@ -157,10 +136,9 @@ async def get_repository_prs_endpoint(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)", example="2024-01-01", regex=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)", example="2024-01-31", regex=r"^\d{4}-\d{2}-\d{2}$"),
     state: Optional[str] = Query("all", description="Filter by PR state: 'all', 'open', 'closed', 'merged'", enum=["all", "open", "closed", "merged"]),
-    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     logger.info(
-        f"User '{current_user.get('username')}' requesting PRs for {repo_owner}/{repo_name} "
+        f"Requesting PRs for {repo_owner}/{repo_name} "
         f"from {start_date or 'any'} to {end_date or 'any'}, state: {state}"
     )
 
