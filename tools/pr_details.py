@@ -63,7 +63,8 @@ def fetch_issue_details(issue_number: int, repo_owner: str, repo_name: str, head
         },
         "labels": [label["name"] for label in issue_data["labels"]],
         "assignees": [assignee["login"] for assignee in issue_data["assignees"]],
-        "body": issue_data["body"]
+        "body": issue_data["body"],
+        "url": url
     }
 
 def get_all_paginated_data(url: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
