@@ -784,3 +784,69 @@ async def list_repository_issues_endpoint(
     except Exception as e:
         logger.error(f"Unexpected error fetching issues for {repo_owner}/{repo_name}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {type(e).__name__}")
+
+
+@app.get("/repo/builds")
+async def get_builds(
+    owner: str = Query(...),
+    repo: str = Query(...),
+    range: str = Query("week", regex="^(week|month|quarter)$")
+):
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_time_range(period: str) -> tuple[str, str]:
+        now = datetime.utcnow()
+        if period == "week":
+            start = now - timedelta(weeks=1)
+        elif period == "month":
+            start = now - relativedelta(months=1)
+        elif period == "quarter":
+            start = now - relativedelta(months=3)
+        return start.isoformat(), now.isoformat()
+
+    since_iso, until_iso = get_time_range(range)
+    since = datetime.fromisoformat(since_iso)
+    until = datetime.fromisoformat(until_iso)
+
+    builds = []
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=100"
+
+    while url:
+        response = requests.get(url, headers=headers)
+        if not response.ok:
+            raise HTTPException(status_code=500, detail="GitHub API error")
+
+        runs = response.json().get("workflow_runs", [])
+        for run in runs:
+            started_at_str = run.get("run_started_at")
+            if not started_at_str:
+                continue
+
+            try:
+                started_at = datetime.fromisoformat(started_at_str[:-1])
+            except Exception:
+                continue
+
+            if started_at < since:
+                url = None  # Stop paginating if we've gone beyond the range
+                break
+
+            if started_at <= until:
+                builds.append({
+                    "id": run["id"],
+                    "status": run.get("conclusion"),
+                    "duration_seconds": (
+                        datetime.fromisoformat(run["updated_at"][:-1]) - started_at
+                    ).seconds,
+                    "started_at": started_at_str,
+                    "build_url": run["html_url"],
+                    "triggered_by": run["actor"]["login"] if run.get("actor") else "unknown"
+                })
+
+        if url:  # Only fetch next page if still paginating
+            url = response.links.get("next", {}).get("url")
+
+    return builds
