@@ -42,46 +42,30 @@ def create_tree_structure(tree_data: Dict[str, Any]) -> Dict:
     return root
 
 def get_file_tree(owner: str, repo: str, branch: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Get the file tree structure of a GitHub repository.
-    
-    Args:
-        owner: GitHub repository owner/username
-        repo: Repository name
-        branch: Branch name (defaults to 'main' if not provided)
-    
-    Returns:
-        Dict containing the repository tree structure
-        
-    Raises:
-        Exception: If there's an error fetching the repository data
-    """
     if branch is None:
         branch = 'main'
-    
+
     github_token = os.environ.get('GITHUB_TOKEN')
     if not github_token:
         raise Exception('GitHub token not configured')
-    
+
     api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    
     headers = {
         'Authorization': f'token {github_token}',
         'Accept': 'application/vnd.github.v3+json'
     }
-    
+
     response = requests.get(api_url, headers=headers)
-    
     if response.status_code != 200:
         error_message = response.json().get('message', 'Unknown error')
         raise Exception(f"GitHub API error (status {response.status_code}): {error_message}")
-    
+
     data = response.json()
-    tree_structure = create_tree_structure(data)
-    
+    tree_structure = create_tree_structure(data)  # You must define this function
+
     return {
-        'repository owner': f"{owner}",
-        'repository name': f"{repo}",
+        'repository owner': owner,
+        'repository name': repo,
         'branch': branch,
         'truncated': data.get('truncated', False),
         'tree': tree_structure

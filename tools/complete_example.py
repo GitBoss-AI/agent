@@ -50,7 +50,7 @@ Acceptance Criteria:
 - This is a straightforward change, mostly involving an update to the package.json file.
 """
 
-# Step 1: Get file tree 
+# Step 1: Get file tree
 print("Getting repository file tree...")
 file_tree_response = get_file_tree(repo_owner, repo_name)
 # Convert tree to string format for the LLM
@@ -61,9 +61,11 @@ files_to_change = get_files_to_change(file_tree_response, issue_description)
 print(files_to_change)
 
 # Step 3: Get file content
-file_content = get_files_content(repo_owner, repo_name, files_to_change.filesToChange)
+file_paths = [f.filePath for f in files_to_change.filesToChange]  # ✅ extract paths from model
+file_content = get_files_content(repo_owner, repo_name, file_paths)
 print(file_content)
 
 # Step 4: Generate git diffs
-git_diffs = generate_git_diffs(file_content, issue_description, "Update the package.json to change the view name from 'InfraStack GitHub Issues' to 'GitHub Issues'")
+file_inputs = [FileContentInput(filePath=f.path, content=f.content) for f in file_content.files]  # ✅ convert to input format
+git_diffs = generate_git_diffs(file_inputs, issue_description, "Update the package.json to change the view name from 'InfraStack GitHub Issues' to 'GitHub Issues'")
 print(git_diffs)

@@ -1,22 +1,27 @@
+import json
 import os
-from typing import List
+from typing import List, Union, Dict, Any, Optional
 from pydantic import BaseModel
 from openai import OpenAI
+
 
 class FileToChange(BaseModel):
     filePath: str
     reason: str
 
+
 class FilesToChangeResponse(BaseModel):
     filesToChange: List[FileToChange]
-    explanation: str
+    explanation: Optional[str] = None
 
-def get_files_to_change(file_tree: str, issue_description: str) -> FilesToChangeResponse:
+
+def get_files_to_change(
+        file_tree: Union[str, Dict[str, Any]],
+        issue_description: str
+) -> FilesToChangeResponse:
     try:
-        client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY")
-        )
-        
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
         system_prompt = """
 You are an expert software developer assistant. Your task is to analyze a file tree and an issue description,
 then identify which files need to be modified to solve the issue.
@@ -29,14 +34,23 @@ Respond with a JSON object that includes:
 - A brief explanation of your overall approach to solving the issue
 - In the file Tree I only want the files path in the array without any other text.
 """
-        
+
+        # Handle both raw string or dict-based file tree
+        if isinstance(file_tree, str):
+            tree_str = file_tree
+        elif isinstance(file_tree, dict) and "tree" in file_tree:
+            tree_str = json.dumps(file_tree["tree"], indent=2)
+        else:
+            raise ValueError("Invalid file_tree format. Must be a string or dict with a 'tree' key.")
+
         user_prompt = f"""
 # File Tree:
-{file_tree}
+{tree_str}
+
 # Issue Description:
 {issue_description}
 """
-        
+
         response = client.responses.parse(
             model="gpt-4o-2024-08-06",
             input=[
@@ -44,14 +58,15 @@ Respond with a JSON object that includes:
                 {"role": "user", "content": user_prompt}
             ],
             text_format=FilesToChangeResponse,
-            temperature=0.1  # Lower temperature for more deterministic output
+            temperature=0.1
         )
-        
+
         return response.output_parsed
-        
+
     except Exception as error:
         print(f"Error getting files to change: {error}")
-        raise error
+        raise
+
 
 # Example usage
 if __name__ == "__main__":
@@ -70,7 +85,7 @@ src/
   App.js
 """
     issue_description = "Users are reporting that after login, they sometimes get redirected to a blank page instead of the dashboard."
-    
+
     try:
         result = get_files_to_change(file_tree, issue_description)
         print(result.model_dump_json(indent=2))

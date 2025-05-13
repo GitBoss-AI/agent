@@ -121,67 +121,41 @@ def get_file_content_paginated(repo_owner: str, repo_name: str, file_path: str,
         return response.text
 
 def get_files_content(repo_owner: str, repo_name: str, file_paths: Optional[List[str]] = None, 
-                     branch: str = "main", max_files: int = 50) -> FileContentResponse:
-    """
-    Fetches content of multiple files from a GitHub repository.
-    If file_paths is None, fetches all files in the repository (up to max_files limit).
-    
-    Args:
-        repo_owner: GitHub repository owner/username
-        repo_name: Repository name
-        file_paths: List of file paths to fetch (None to fetch all files)
-        branch: Branch name (defaults to 'main')
-        max_files: Maximum number of files to fetch when getting all files
-        
-    Returns:
-        FileContentResponse object containing the contents of all files
-        
-    Raises:
-        Exception: If there's an error fetching the file content
-    """
+                      branch: str = "main", max_files: int = 50) -> FileContentResponse:
     github_token = os.environ.get('GITHUB_TOKEN')
     if not github_token:
         raise Exception('GitHub token not configured')
-    
+
     headers = {
         'Authorization': f'token {github_token}',
         'Accept': 'application/vnd.github.v3+json'
     }
-    
+
     files = []
     total_files = 0
-    
-    # If no specific files are requested, get all files from the repository
+
     if file_paths is None:
-        all_repo_files = get_repository_files(repo_owner, repo_name, branch)
+        all_repo_files = get_repository_files(repo_owner, repo_name, branch)  # You must define this
         total_files = len(all_repo_files)
-        
-        # Limit the number of files to process
         file_paths = [file_info['path'] for file_info in all_repo_files[:max_files]]
     else:
         total_files = len(file_paths)
-    
+
     for file_path in file_paths:
         try:
-            # Use the paginated method to handle large files
-            content = get_file_content_paginated(repo_owner, repo_name, file_path, branch)
-            
-            files.append(FileContent(
-                path=file_path, 
-                content=content,
-                size=len(content)
-            ))
+            content = get_file_content_paginated(repo_owner, repo_name, file_path, branch)  # You must define this
+            files.append(FileContent(path=file_path, content=content, size=len(content)))
         except Exception as e:
             print(f"Error fetching {file_path}: {str(e)}")
-            # Continue with other files instead of failing completely
             continue
-    
+
     return FileContentResponse(
-        files=files, 
-        repoOwner=repo_owner, 
+        files=files,
+        repoOwner=repo_owner,
         repoName=repo_name,
         total_files_count=total_files
     )
+
 
 # Example usage
 if __name__ == "__main__":

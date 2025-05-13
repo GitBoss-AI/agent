@@ -3,10 +3,12 @@ from typing import List, Dict, Any, Union, Optional
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
+
 # Define models for input
 class FileContentInput(BaseModel):
     filePath: str
     content: str  # Raw file content with newlines preserved
+
 
 # Models for diff hunk
 class DiffHunk(BaseModel):
@@ -16,22 +18,25 @@ class DiffHunk(BaseModel):
     originalLines: List[str]  # Original lines that are being modified
     newLines: List[str]  # New lines that are being added
 
+
 # Model for a single file diff
 class FileDiff(BaseModel):
     filePath: str
     hunks: List[DiffHunk]
+
 
 # Model for the complete diff response
 class DiffResponse(BaseModel):
     changes: List[FileDiff]
     explanation: str
 
+
 def generate_diffs(
-    file_contents: List[FileContentInput],
-    issue_description: str,
-    user_prompt: str,
-    api_key: Optional[str] = None,
-    model: str = "gpt-4o-2024-08-06"
+        file_contents: List[FileContentInput],
+        issue_description: str,
+        user_prompt: str,
+        api_key: Optional[str] = None,
+        model: str = "gpt-4o-2024-08-06"
 ) -> DiffResponse:
     """
     Generate code diffs to solve a specific issue
@@ -50,19 +55,20 @@ def generate_diffs(
         # Use the provided API key or get from environment
         openai_api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not openai_api_key:
-            raise ValueError("OpenAI API key is required. Provide it as an argument or set OPENAI_API_KEY environment variable.")
-        
+            raise ValueError(
+                "OpenAI API key is required. Provide it as an argument or set OPENAI_API_KEY environment variable.")
+
         client = OpenAI(api_key=openai_api_key)
-        
+
         # Create a formatted string of all file contents with line numbers preserved
         files_context = []
         for file in file_contents:
             lines = file.content.split("\n")
             numbered_lines = "\n".join([f"{index + 1}: {line}" for index, line in enumerate(lines)])
             files_context.append(f"# File: {file.filePath}\n{numbered_lines}")
-        
+
         files_context_str = "\n\n".join(files_context)
-        
+
         # Construct the system prompt
         system_prompt = """
 You are an expert software developer who specializes in fixing code issues. Your task is to analyze files with line numbers and generate precise Git-style diff patches to solve a specific issue.
@@ -111,7 +117,7 @@ Example of proper response format:
 
 Your response will be parsed according to this structure, so follow it exactly.
 """
-        
+
         # Construct the user message
         user_message = f"""
 # Issue Description:
@@ -123,7 +129,7 @@ Your response will be parsed according to this structure, so follow it exactly.
 # Files with Line Numbers:
 {files_context_str}
 """
-        
+
         # Make the API call
         response = client.responses.parse(
             model=model,
@@ -132,17 +138,18 @@ Your response will be parsed according to this structure, so follow it exactly.
                 {"role": "user", "content": user_message}
             ],
             text_format=DiffResponse,
-            temperature=0.1  # Lower temperature for more deterministic output
+            temperature=0.1
         )
-        
+
         if not response.output_parsed:
             raise ValueError("Failed to parse OpenAI response")
-        
+
         return response.output_parsed
-        
+
     except Exception as error:
         print(f"Error generating diffs: {error}")
         raise error
+
 
 def format_git_diff(diff_response: DiffResponse) -> str:
     """
@@ -155,34 +162,35 @@ def format_git_diff(diff_response: DiffResponse) -> str:
         Formatted string in Git diff format
     """
     formatted_diff = f"# Code Changes\n\n{diff_response.explanation}\n\n"
-    
+
     for file_diff in diff_response.changes:
         formatted_diff += f"diff --git a/{file_diff.filePath} b/{file_diff.filePath}\n"
         formatted_diff += f"--- a/{file_diff.filePath}\n"
         formatted_diff += f"+++ b/{file_diff.filePath}\n"
-        
+
         for hunk in file_diff.hunks:
             # Calculate the number of lines in the modified version
             modified_lines = len(hunk.newLines)
-            
+
             formatted_diff += f"@@ -{hunk.startLine},{hunk.lineCount} +{hunk.startLine},{modified_lines} @@\n"
-            
+
             # Format the diff content with proper prefixes
             for line in hunk.originalLines:
                 formatted_diff += f"-{line}\n"
             for line in hunk.newLines:
                 formatted_diff += f"+{line}\n"
-        
+
         formatted_diff += "\n"
-    
+
     return formatted_diff
 
+
 def generate_git_diffs(
-    file_contents: List[FileContentInput],
-    issue_description: str,
-    user_prompt: str,
-    api_key: Optional[str] = None,
-    model: str = "gpt-4o-2024-08-06"
+        file_contents: List[FileContentInput],
+        issue_description: str,
+        user_prompt: str,
+        api_key: Optional[str] = None,
+        model: str = "gpt-4o-2024-08-06"
 ) -> str:
     """
     Helper function to combine generating and formatting diffs
@@ -200,6 +208,7 @@ def generate_git_diffs(
     diff_response = generate_diffs(file_contents, issue_description, user_prompt, api_key, model)
     return format_git_diff(diff_response)
 
+
 # Example usage
 if __name__ == "__main__":
     test_files = [
@@ -210,13 +219,12 @@ if __name__ == "__main__":
 }"""
         )
     ]
-    
+
     test_issue = "Add input validation to the add function"
     test_prompt = "Add type checking for numbers"
-    
+
     try:
-        # Generate and print the Git diff
         git_diff = generate_git_diffs(test_files, test_issue, test_prompt)
         print(git_diff)
     except Exception as error:
-        print(f"Error: {error}") 
+        print(f"Error: {error}")
