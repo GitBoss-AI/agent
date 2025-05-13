@@ -332,6 +332,98 @@ async def get_repo_stats(
         raise HTTPException(status_code=500, detail="Failed to fetch repository stats.")
 
 
+@app.get("/repo/contributors/stats", summary="Top Contributors Stats")
+async def get_top_contributors_stats(
+        owner: str = Query(...),
+        repo: str = Query(...),
+        range: str = Query("week", regex="^(week|month|quarter)$"),
+        limit: int = Query(10)
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_time_range(period: str) -> tuple[str, str]:
+        now = datetime.utcnow()
+        if period == "week":
+            start = now - timedelta(weeks=1)
+        elif period == "month":
+            start = now - relativedelta(months=1)
+        elif period == "quarter":
+            start = now - relativedelta(months=3)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid range")
+        return start.isoformat(), now.isoformat()
+
+    since, until = get_time_range(range)
+
+    # Step 1: Get commit authors in the given time frame
+    commits_url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    commit_authors = {}
+    params = {"since": since, "until": until, "per_page": 100}
+    url = commits_url
+
+    while url:
+        resp = requests.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"GitHub error: {resp.text}")
+        for commit in resp.json():
+            author = commit.get("author")
+            if author and author.get("login"):
+                login = author["login"]
+                commit_authors[login] = commit_authors.get(login, 0) + 1
+        if 'next' in resp.links:
+            url = resp.links['next']['url']
+            params = None
+        else:
+            break
+
+    # Step 2: Sort by commits and take top N
+    top_contributors = sorted(commit_authors.items(), key=lambda x: -x[1])[:limit]
+
+    # Step 3: Gather PRs and reviews
+    contributors_stats = []
+
+    for username, commit_count in top_contributors:
+        # PR count
+        pr_query = f"repo:{owner}/{repo} type:pr author:{username} created:{since}..{until}"
+        pr_url = f"https://api.github.com/search/issues?q={pr_query}"
+        pr_resp = requests.get(pr_url, headers=headers)
+        pr_count = pr_resp.json().get("total_count", 0) if pr_resp.ok else 0
+
+        # Reviews
+        # This is expensive: we search PRs and then fetch reviews
+        review_count = 0
+        pr_list_url = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:pr+created:{since}..{until}"
+        pr_list_resp = requests.get(pr_list_url, headers=headers)
+        pr_items = pr_list_resp.json().get("items", []) if pr_list_resp.ok else []
+
+        for pr in pr_items:
+            pr_number = pr.get("number")
+            if not pr_number:
+                continue
+            review_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+            rev_resp = requests.get(review_url, headers=headers)
+            if not rev_resp.ok:
+                continue
+            reviews = rev_resp.json()
+            review_count += sum(1 for r in reviews if r.get("user", {}).get("login") == username)
+
+        contributors_stats.append({
+            "username": username,
+            "commits": commit_count,
+            "prs": pr_count,
+            "reviews": review_count,
+        })
+
+    return {"contributors": contributors_stats}
+
+
 # --- Health Check Endpoint (as before) ---
 @app.get("/health", summary="Health Check", description="Simple health check endpoint.")
 async def health_check():
