@@ -166,22 +166,6 @@ class ContributorItem(BaseModel):
     avatar_url: Optional[str] = Field(None, examples=["https://avatars.githubusercontent.com/u/1?v=4"])
     profile_url: str = Field(..., examples=["https://github.com/octocat"])
 
-
-# --- JWT Authentication Setup (as before) ---
-jwt_validator = JWTValidator()
-bearer_scheme = HTTPBearer()
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
-) -> Dict[str, Any]:
-    # ... (implementation as before) ...
-    token = credentials.credentials
-    payload = jwt_validator.validate_token(token)
-    if payload is None:
-        logger.warning("Invalid or expired token provided for API request.")
-        raise HTTPException(status_code=401, detail="Invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
-    logger.info(f"API request authenticated for user: {payload.get('username', 'Unknown')}, ID: {payload.get('sub')}")
-    return payload
-
 # --- API Endpoints ---
 
 @app.get("/health", summary="Health Check")
@@ -196,9 +180,7 @@ async def analyze_pull_request_endpoint(
     pr_number: int = Query(..., description="The Pull Request number"),
     repo_owner: str = Query(..., description="The owner of the repository"),
     repo_name: str = Query(..., description="The name of the repository"),
-    current_user_payload: Dict[str, Any] = Depends(get_current_user)
 ):
-    logger.info(f"User '{current_user_payload.get('username')}' requesting analysis for PR #{pr_number} in {repo_owner}/{repo_name}")
     try:
         pr_details_data = fetch_pull_request_details(pr_number=pr_number, repo_owner=repo_owner, repo_name=repo_name)
         if not pr_details_data:
@@ -221,10 +203,8 @@ async def get_repository_prs_endpoint(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
     state: Optional[str] = Query("all", description="Filter by PR state", enum=["all", "open", "closed", "merged"]),
-    current_user_payload: Dict[str, Any] = Depends(get_current_user)
 ):
     # ... (date validation and logic as before) ...
-    logger.info(f"User '{current_user_payload.get('username')}' requesting PRs for {repo_owner}/{repo_name}")
     try:
         result_dict = list_repository_pull_requests(repo_owner=repo_owner, repo_name=repo_name, start_date_str=start_date, end_date_str=end_date, pr_state_filter=state)
         pull_requests_data = result_dict.get("pull_requests", [])
@@ -244,10 +224,8 @@ async def get_contributor_activity_endpoint(
     username: str = Query(..., description="GitHub username of the contributor"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)", regex=r"^\d{4}-\d{2}-\d{2}$"),
-    current_user_payload: Dict[str, Any] = Depends(get_current_user)
 ):
     # ... (date validation and logic as before) ...
-    logger.info(f"User '{current_user_payload.get('username')}' requesting activity for '{username}' in {repo_owner}/{repo_name}")
     try:
         activity_data_dict = fetch_contributor_activity(repo_owner=repo_owner, repo_name=repo_name, contributor_username=username, start_date_str=start_date, end_date_str=end_date)
         return activity_data_dict
@@ -269,12 +247,9 @@ async def get_contributor_activity_endpoint(
 async def list_repository_contributors_endpoint(
     repo_owner: str = Query(..., description="The owner of the repository", example="facebook"),
     repo_name: str = Query(..., description="The name of the repository", example="react"),
-    current_user_payload: Dict[str, Any] = Depends(get_current_user) # Protected
 ):
-    logger.info(
-        f"User '{current_user_payload.get('username')}' requesting contributors for {repo_owner}/{repo_name}"
-    )
     try:
+        print("GITHUB_TOKEN found:", os.getenv("GITHUB_TOKEN") is not None)
         # The get_repo_contributors tool returns a dict: {"contributors": [...]}
         # We want to return the list of contributors directly.
         result_dict = get_repo_contributors(
