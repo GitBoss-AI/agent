@@ -400,7 +400,7 @@ async def get_repo_stats(
         raise HTTPException(status_code=500, detail="Failed to fetch repository stats.")
 
 
-@app.get("/repo/contributors/stats", summary="Top Contributors Stats")
+@app.get("/repo/contributor-stats", summary="Top Contributors Stats")
 async def get_top_contributors_stats(
         owner: str = Query(...),
         repo: str = Query(...),

@@ -5,12 +5,6 @@ import os
 from dotenv import load_dotenv
 from tools.pr_details import fetch_pull_request_details
 
-pr_details = fetch_pull_request_details(
-pr_number=33165,
-repo_owner="facebook",
-repo_name="react"
-)
-
 load_dotenv()
 
 
