@@ -40,6 +40,10 @@ try:
     from tools.list_repo_pr import list_repository_pull_requests
     from tools.get_contributor_activity import fetch_contributor_activity
     from tools.get_contributors import get_repo_contributors # NEW IMPORT
+    from tools.get_repo_file_tree import get_file_tree
+    from tools.get_files_change import get_files_to_change, FilesToChangeResponse, FileToChange
+    from tools.get_file_content import get_files_content, FileContentResponse as GetFileContentResponseCP, FileContent as FileContentCP # Aliased to avoid conflict
+    from tools.file_diff_generator import FileContentInput, generate_git_diffs
 except ImportError as e:
     print(f"Critical Error importing tools: {e}. Ensure 'tools' directory is in PYTHONPATH or structured as a package.")
     raise
@@ -213,12 +217,291 @@ class RepoIssuesResponse(BaseModel):
     status_code: Optional[int] = None # To handle potential errors from the script
     details: Optional[str] = None # To handle potential errors from the script
 # --- API Endpoints ---
+# --- Pydantic Models for the New Workflow ---
+
+class GenerateIssueSolutionRequest(BaseModel):
+    repo_owner: str = Field(..., description="Owner of the repository", example="alpsencer")
+    repo_name: str = Field(..., description="Name of the repository", example="infrastack")
+    issue_number: int = Field(..., description="The number of the issue to generate a solution for", example=123)
+    issue_title: str = Field(..., description="Title of the issue", example="Fix login button")
+    issue_description: str = Field(..., description="Full description of the issue")
+    # branch: Optional[str] = Field("main", description="Branch to operate on") # Future: allow branch selection
+
+class FileTreeStepResponseData(BaseModel):
+    repository_owner: str = Field(alias="repository owner")
+    repository_name: str = Field(alias="repository name")
+    branch: str
+    truncated: bool
+    tree: Dict[str, Any]
+
+    class Config:
+        populate_by_name = True # Allows using alias for field names
+
+class StepResponse(BaseModel):
+    step_name: str
+    status: str # "success", "error", "skipped"
+    data: Optional[Any] = None
+    error_message: Optional[str] = None
+    duration_ms: Optional[float] = None
+
+class IssueSolutionOverallResponse(BaseModel):
+    message: str
+    workflow_id: Optional[str] = None # For potential future tracking
+    steps: List[StepResponse]
+    final_diff: Optional[str] = None
+    error: Optional[str] = None
+
+
+# --- Pydantic Models (Existing - ensure these are comprehensive for your app) ---
+# ... (Keep all your existing Pydantic models: PRListItem, ContributorItem, PRAnalysis etc.)
+class CommitInfo(BaseModel):
+    sha: str
+    message: str
+    html_url: str
+    date: datetime
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
+    changed_files: Optional[List[str]] = None
+
+class PRInfo(BaseModel):
+    number: int
+    title: str
+    description: Optional[str] = None
+    state: str
+    html_url: str
+    created_at: datetime
+    closed_at: Optional[datetime] = None
+    merged_at: Optional[datetime] = None
+
+class PRActivityDetail(BaseModel):
+    type: str
+    state: Optional[str] = None
+    body: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    html_url: str
+    path: Optional[str] = None
+    line: Optional[int] = None
+
+class PRWithReviewActivity(BaseModel):
+    pr_number: int
+    pr_title: str
+    pr_html_url: str
+    pr_description: Optional[str] = None
+    activities: List[PRActivityDetail]
+
+class GeneralPRComment(BaseModel):
+    body: str
+    created_at: datetime
+    html_url: str
+
+class PRWithGeneralComments(BaseModel):
+    pr_number: int
+    pr_title: str
+    pr_html_url: str
+    pr_description: Optional[str] = None
+    comments: List[GeneralPRComment]
+
+class IssueInfo(BaseModel): # This is a general IssueInfo, might differ from RepoIssuesResponse's IssueItem
+    number: int
+    title: str
+    description: Optional[str] = None
+    state: str
+    html_url: str
+    created_at: datetime
+    closed_at: Optional[datetime] = None
+
+class ContributorActivityResponse(BaseModel):
+    total_commits: int
+    commits: List[CommitInfo]
+    total_lines_changed: int
+    unique_files_changed_in_commits: List[str]
+    authored_prs: List[PRInfo]
+    reviews_and_review_comments: List[PRWithReviewActivity]
+    general_pr_comments: List[PRWithGeneralComments]
+    created_issues: List[IssueInfo]
+    closed_issues_by_user: List[IssueInfo]
+
+class PRListItem(BaseModel):
+    number: int
+    title: str
+    state: str
+    url: str
+    created_at: datetime
+
+class ContributorItem(BaseModel):
+    username: str
+    contributions: int
+    avatar_url: Optional[str] = Field(None, examples=["https://avatars.githubusercontent.com/u/1?v=4"])
+    profile_url: str = Field(..., examples=["https://github.com/octocat"])
+
+class IssueUser(BaseModel):
+    login: str
+    id: int
+    html_url: str
+    avatar_url: str
+
+class IssueLabel(BaseModel):
+    name: str
+    color: str
+
+class IssueItem(BaseModel): # Used by RepoIssuesResponse
+    id: int
+    number: int
+    title: str
+    body: Optional[str] = None
+    state: str
+    created_at: datetime
+    updated_at: datetime
+    closed_at: Optional[datetime] = None
+    html_url: str
+    user: IssueUser
+    labels: List[IssueLabel]
+
+class RepoIssuesResponse(BaseModel):
+    repository: str
+    time_period: str
+    state_filter: str
+    total_issues: int
+    issues: List[IssueItem]
+    error: Optional[str] = None
+    status_code: Optional[int] = None
+    details: Optional[str] = None
+
+
+# --- API Endpoints ---
 
 @app.get("/health", summary="Health Check")
 async def health_check():
     # ... (implementation as before) ...
     logger.info("Health check endpoint was called.")
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+@app.post("/generate-issue-solution", response_model=IssueSolutionOverallResponse, summary="Generates a potential code solution for a GitHub issue")
+async def generate_issue_solution_endpoint(
+    request_data: GenerateIssueSolutionRequest,
+    #§current_user: dict = Depends(get_current_user)
+):
+    #user_id = current_user.get("id", "UnknownID") # Get user ID from token
+    #logger.info(f"User ID '{user_id}' initiating solution generation for issue #{request_data.issue_number} in {request_data.repo_owner}/{request_data.repo_name}")
+
+    steps_results: List[StepResponse] = []
+    start_time_workflow = datetime.now()
+
+    # --- Helper to add step result ---
+    def add_step_result(name: str, status: str, data: Optional[Any] = None, error_msg: Optional[str] = None, start_time: datetime = datetime.now()):
+        duration = (datetime.now() - start_time).total_seconds() * 1000
+        steps_results.append(StepResponse(step_name=name, status=status, data=data, error_message=error_msg, duration_ms=duration))
+
+    # --- Step 1: Get repository file tree ---
+    step_name_tree = "Get Repository File Tree"
+    start_time_step = datetime.now()
+    file_tree_data_raw: Optional[Dict[str, Any]] = None
+    try:
+        file_tree_data_raw = get_file_tree(
+            owner=request_data.repo_owner,
+            repo=request_data.repo_name
+            # branch=request_data.branch # Add if branch selection is implemented
+        )
+        # Validate with Pydantic model if desired, or use as dict
+        # file_tree_validated = FileTreeStepResponseData(**file_tree_data_raw) 
+        add_step_result(step_name_tree, "success", data=file_tree_data_raw, start_time=start_time_step)
+        logger.info(f"Step 1 ({step_name_tree}) successful for issue #{request_data.issue_number}.")
+    except Exception as e:
+        logger.error(f"Error in Step 1 ({step_name_tree}) for issue #{request_data.issue_number}: {str(e)}", exc_info=True)
+        add_step_result(step_name_tree, "error", error_msg=str(e), start_time=start_time_step)
+        return IssueSolutionOverallResponse(
+            message="Workflow failed at 'Get Repository File Tree' step.",
+            steps=steps_results,
+            error=f"Error getting file tree: {str(e)}"
+        )
+
+    # --- Step 2: Identify files to change ---
+    step_name_files_change = "Identify Files to Change"
+    start_time_step = datetime.now()
+    files_to_change_data: Optional[FilesToChangeResponse] = None
+    try:
+        files_to_change_data = get_files_to_change(
+            file_tree=file_tree_data_raw, # Pass the raw dict as it might be what the tool expects
+            issue_description=request_data.issue_description
+        )
+        add_step_result(step_name_files_change, "success", data=files_to_change_data.model_dump(), start_time=start_time_step)
+        logger.info(f"Step 2 ({step_name_files_change}) successful for issue #{request_data.issue_number}. Files: {[f.filePath for f in files_to_change_data.filesToChange]}")
+        
+        if not files_to_change_data.filesToChange:
+            logger.warning(f"No files identified to change for issue #{request_data.issue_number}.")
+            add_step_result("Generate Git Diffs", "skipped", data="No files were identified as needing changes.")
+            return IssueSolutionOverallResponse(
+                message="Workflow completed: No files identified for changes.",
+                steps=steps_results,
+                final_diff="No changes needed."
+            )
+    except Exception as e:
+        logger.error(f"Error in Step 2 ({step_name_files_change}) for issue #{request_data.issue_number}: {str(e)}", exc_info=True)
+        add_step_result(step_name_files_change, "error", error_msg=str(e), start_time=start_time_step)
+        return IssueSolutionOverallResponse(
+            message="Workflow failed at 'Identify Files to Change' step.",
+            steps=steps_results,
+            error=f"Error identifying files to change: {str(e)}"
+        )
+
+    # --- Step 3: Get content of identified files ---
+    step_name_content = "Get File Content"
+    start_time_step = datetime.now()
+    file_content_data: Optional[GetFileContentResponseCP] = None
+    try:
+        file_paths_to_fetch = [f.filePath for f in files_to_change_data.filesToChange]
+        file_content_data = get_files_content(
+            repo_owner=request_data.repo_owner,
+            repo_name=request_data.repo_name,
+            file_paths=file_paths_to_fetch
+            # branch=request_data.branch
+        )
+        add_step_result(step_name_content, "success", data=file_content_data.model_dump(), start_time=start_time_step)
+        logger.info(f"Step 3 ({step_name_content}) successful for issue #{request_data.issue_number}. Fetched content for {len(file_content_data.files)} files.")
+    except Exception as e:
+        logger.error(f"Error in Step 3 ({step_name_content}) for issue #{request_data.issue_number}: {str(e)}", exc_info=True)
+        add_step_result(step_name_content, "error", error_msg=str(e), start_time=start_time_step)
+        return IssueSolutionOverallResponse(
+            message="Workflow failed at 'Get File Content' step.",
+            steps=steps_results,
+            error=f"Error getting file content: {str(e)}"
+        )
+
+    # --- Step 4: Generate git diffs ---
+    step_name_diff = "Generate Git Diffs"
+    start_time_step = datetime.now()
+    git_diff_output: Optional[str] = None
+    try:
+        file_inputs_for_diff = [
+            FileContentInput(filePath=f.path, content=f.content) for f in file_content_data.files
+        ]
+        # Construct a user prompt for the diff generator.
+        user_prompt_for_diff = f"Resolve issue #{request_data.issue_number} titled '{request_data.issue_title}'. The core problem is: {request_data.issue_description.split('.', 1)[0]}"
+        
+        git_diff_output = generate_git_diffs(
+            file_contents=file_inputs_for_diff,
+            issue_description=request_data.issue_description,
+            user_prompt=user_prompt_for_diff
+        )
+        add_step_result(step_name_diff, "success", data={"diff": git_diff_output}, start_time=start_time_step) # Wrap diff in a dict for consistency if needed
+        logger.info(f"Step 4 ({step_name_diff}) successful for issue #{request_data.issue_number}.")
+    except Exception as e:
+        logger.error(f"Error in Step 4 ({step_name_diff}) for issue #{request_data.issue_number}: {str(e)}", exc_info=True)
+        add_step_result(step_name_diff, "error", error_msg=str(e), start_time=start_time_step)
+        return IssueSolutionOverallResponse(
+            message="Workflow failed at 'Generate Git Diffs' step.",
+            steps=steps_results,
+            error=f"Error generating git diffs: {str(e)}"
+        )
+
+    workflow_duration = (datetime.now() - start_time_workflow).total_seconds()
+    logger.info(f"Issue solution workflow for #{request_data.issue_number} completed in {workflow_duration:.2f} seconds.")
+    return IssueSolutionOverallResponse(
+        message="Workflow completed successfully.",
+        steps=steps_results,
+        final_diff=git_diff_output
+    )
 
 @app.get("/analyze-pr/", response_model=PRAnalysis, summary="Analyze Single Pull Request Contributions")
 async def analyze_pull_request_endpoint(
