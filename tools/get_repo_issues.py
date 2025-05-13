@@ -95,7 +95,8 @@ def get_repo_issues(
                     "user": {
                         "login": item["user"]["login"],
                         "id": item["user"]["id"],
-                        "html_url": item["user"]["html_url"]
+                        "html_url": item["user"]["html_url"],
+                        "avatar_url": item["user"]["avatar_url"]
                     },
                     "labels": [{"name": label["name"], "color": label["color"]} for label in item.get("labels", [])]
                 }
