@@ -424,6 +424,95 @@ async def get_top_contributors_stats(
     return {"contributors": contributors_stats}
 
 
+@app.get("/repo/team-activity")
+async def get_team_activity(
+    owner: str = Query(...),
+    repo: str = Query(...),
+    time_range: str = Query("week", regex="^(week|month|quarter)$")
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_date_bins(period: str):
+        now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        bins = []
+
+        if period == "week":
+            for i in range(7):
+                day = now - timedelta(days=6 - i)
+                bins.append(day.date())
+        elif period == "month":
+            for i in range(4):
+                week_start = now - timedelta(days=(21 - i * 7))
+                bins.append(week_start.date())
+        elif period == "quarter":
+            for i in range(12):
+                week_start = now - timedelta(days=(77 - i * 7))
+                bins.append(week_start.date())
+
+        return bins
+
+    def bin_label(date_obj):
+        return date_obj.strftime("%Y-%m-%d")
+
+    bins = get_date_bins(time_range)
+    bin_labels = [bin_label(d) for d in bins]
+    activity = {label: {"label": label, "commits": 0, "prs": 0, "reviews": 0} for label in bin_labels}
+
+    # Helper: find bin for a date
+    def find_bin(date_str):
+        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").date()
+        for d in reversed(bins):
+            if date_obj >= d:
+                return bin_label(d)
+        return None
+
+    # Commits
+    commits_url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    url = commits_url
+    params = {"since": bins[0].isoformat(), "per_page": 100}
+    while url:
+        resp = requests.get(url, headers=headers, params=params)
+        if not resp.ok:
+            break
+        for c in resp.json():
+            ts = c.get("commit", {}).get("author", {}).get("date")
+            b = find_bin(ts) if ts else None
+            if b:
+                activity[b]["commits"] += 1
+        url = resp.links["next"]["url"] if "next" in resp.links else None
+        params = None
+
+    # PRs
+    pr_q = f"repo:{owner}/{repo} type:pr created:>={bins[0].isoformat()}"
+    pr_url = f"https://api.github.com/search/issues?q={pr_q}&per_page=100"
+    resp = requests.get(pr_url, headers=headers)
+    for pr in resp.json().get("items", []):
+        b = find_bin(pr.get("created_at"))
+        if b:
+            activity[b]["prs"] += 1
+
+    # Reviews (optional — approximated via PR list)
+    for pr in resp.json().get("items", []):
+        pr_number = pr["number"]
+        rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        rev_resp = requests.get(rev_url, headers=headers)
+        if not rev_resp.ok:
+            continue
+        for review in rev_resp.json():
+            b = find_bin(review.get("submitted_at"))
+            if b:
+                activity[b]["reviews"] += 1
+
+    return {"timeline": list(activity.values())}
+
+
 # --- Health Check Endpoint (as before) ---
 @app.get("/health", summary="Health Check", description="Simple health check endpoint.")
 async def health_check():
