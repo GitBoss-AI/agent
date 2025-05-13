@@ -1,6 +1,9 @@
 # my_project/agent copy/app.py
 import os
 import logging
+
+import requests
+from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date
@@ -9,9 +12,17 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from datetime import datetime, timedelta  # Ensure datetime is imported
+from websocket_handler import WebSocketHandler
+from fastapi.responses import PlainTextResponse
+from fastapi.routing import APIRoute
+from starlette.types import Scope, Receive, Send
+
 
 # Load environment variables
 load_dotenv()
+ws_handler = WebSocketHandler()
 
 # --- Import your tools ---
 try:
@@ -288,4 +299,389 @@ async def list_repository_contributors_endpoint(
         raise HTTPException(status_code=500, detail=detail_message)
 
 # --- Run Instructions (as before) ---
+
+# --- Github API endpoints ---
+@app.get("/repo/stats", summary="Repository Monthly Stats", description="Returns commit, PR, issue, and review stats for the last month and % difference from the month before.")
+async def get_repo_stats(
+    owner: str = Query(..., description="GitHub repository owner"),
+    repo: str = Query(..., description="GitHub repository name"),
+    range: str = Query("week", regex="^(week|month|quarter)$")
+):
+    logger.info(f"Fetching repo stats for {owner}/{repo}.")
+
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set in environment.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_time_range(period: str, offset: int = 0) -> tuple[str, str]:
+        now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if period == "week":
+            start = now - timedelta(weeks=offset + 1)
+            end = now - timedelta(weeks=offset)
+        elif period == "month":
+            start = (now.replace(day=1) - relativedelta(months=offset + 1)).replace(day=1)
+            end = (start + relativedelta(months=1))
+        elif period == "quarter":
+            current_month = now.month - 1
+            quarter = current_month // 3
+            start_month = quarter * 3 + 1 - (offset * 3)
+            year_adjust = (start_month - 1) // 12
+            start_month = (start_month - 1) % 12 + 1
+            start = now.replace(month=start_month, day=1, year=now.year + year_adjust)
+            end = start + relativedelta(months=3)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid range")
+
+        return start.date().isoformat(), end.date().isoformat()
+
+    def github_search_count(q: str) -> int:
+        url = f"https://api.github.com/search/issues?q={q}"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"GitHub API error: {response.text}")
+        return response.json().get("total_count", 0)
+
+    def github_commit_count(owner: str, repo: str, since: str, until: str) -> int:
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+        params = {"since": since, "until": until, "per_page": 100}
+        count = 0
+
+        while url:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"GitHub API error: {response.text}")
+            commits = response.json()
+            count += len(commits)
+
+            if 'next' in response.links:
+                url = response.links['next']['url']
+                params = None
+            else:
+                url = None
+
+        return count
+
+    def percentage_change(current: int, previous: int) -> str:
+        if previous == 0:
+            return "+∞%" if current > 0 else "0%"
+        return f"{((current - previous) / previous) * 100:.1f}%"
+
+    def build_summary(metric: str, q_template: str):
+        current_start, current_end = get_time_range(range, offset=0)
+        previous_start, previous_end = get_time_range(range, offset=1)
+
+        if metric == "Reviews":
+            def count_reviews(start, end):
+                q = f"repo:{owner}/{repo}+type:pr+created:{start}..{end}"
+                url = f"https://api.github.com/search/issues?q={q}&per_page=50"
+                response = requests.get(url, headers=headers)
+                if response.status_code != 200:
+                    raise HTTPException(status_code=500, detail=f"GitHub API error: {response.text}")
+                prs = response.json().get("items", [])
+                review_total = 0
+                for pr in prs:
+                    pr_number = pr["number"]
+                    rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+                    rev_response = requests.get(rev_url, headers=headers)
+                    if rev_response.status_code != 200:
+                        continue
+                    review_total += len(rev_response.json())
+                return review_total
+
+            current_count = count_reviews(current_start, current_end)
+            previous_count = count_reviews(previous_start, previous_end)
+
+        elif metric == "Commits":
+            current_count = github_commit_count(owner, repo, current_start, current_end)
+            previous_count = github_commit_count(owner, repo, previous_start, previous_end)
+
+        else:
+            q_current = q_template.format(start=current_start, end=current_end)
+            q_previous = q_template.format(start=previous_start, end=previous_end)
+            current_count = github_search_count(q_current)
+            previous_count = github_search_count(q_previous)
+
+        return {
+            "metric": metric,
+            "count": current_count,
+            "change": percentage_change(current_count, previous_count),
+        }
+
+    try:
+        return {
+            "commits": build_summary("Commits", ""),  # handled separately
+            "prs": build_summary("Pull Requests", f"repo:{owner}/{repo}+type:pr+created:{{start}}..{{end}}"),
+            "issues": build_summary("Issues", f"repo:{owner}/{repo}+type:issue+created:{{start}}..{{end}}"),
+            "reviews": build_summary("Reviews", ""),  # handled separately
+        }
+    except Exception as e:
+        logger.error(f"Error fetching stats for {owner}/{repo}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch repository stats.")
+
+
+@app.get("/repo/contributors/stats", summary="Top Contributors Stats")
+async def get_top_contributors_stats(
+        owner: str = Query(...),
+        repo: str = Query(...),
+        range: str = Query("week", regex="^(week|month|quarter)$"),
+        limit: int = Query(10)
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_time_range(period: str) -> tuple[str, str]:
+        now = datetime.utcnow()
+        if period == "week":
+            start = now - timedelta(weeks=1)
+        elif period == "month":
+            start = now - relativedelta(months=1)
+        elif period == "quarter":
+            start = now - relativedelta(months=3)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid range")
+        return start.isoformat(), now.isoformat()
+
+    since, until = get_time_range(range)
+
+    # Step 1: Get commit authors in the given time frame
+    commits_url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    commit_authors = {}
+    params = {"since": since, "until": until, "per_page": 100}
+    url = commits_url
+
+    while url:
+        resp = requests.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"GitHub error: {resp.text}")
+        for commit in resp.json():
+            author = commit.get("author")
+            if author and author.get("login"):
+                login = author["login"]
+                commit_authors[login] = commit_authors.get(login, 0) + 1
+        if 'next' in resp.links:
+            url = resp.links['next']['url']
+            params = None
+        else:
+            break
+
+    # Step 2: Sort by commits and take top N
+    top_contributors = sorted(commit_authors.items(), key=lambda x: -x[1])[:limit]
+
+    # Step 3: Gather PRs and reviews
+    contributors_stats = []
+
+    for username, commit_count in top_contributors:
+        # PR count
+        pr_query = f"repo:{owner}/{repo} type:pr author:{username} created:{since}..{until}"
+        pr_url = f"https://api.github.com/search/issues?q={pr_query}"
+        pr_resp = requests.get(pr_url, headers=headers)
+        pr_count = pr_resp.json().get("total_count", 0) if pr_resp.ok else 0
+
+        # Reviews
+        # This is expensive: we search PRs and then fetch reviews
+        review_count = 0
+        pr_list_url = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:pr+created:{since}..{until}"
+        pr_list_resp = requests.get(pr_list_url, headers=headers)
+        pr_items = pr_list_resp.json().get("items", []) if pr_list_resp.ok else []
+
+        for pr in pr_items:
+            pr_number = pr.get("number")
+            if not pr_number:
+                continue
+            review_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+            rev_resp = requests.get(review_url, headers=headers)
+            if not rev_resp.ok:
+                continue
+            reviews = rev_resp.json()
+            review_count += sum(1 for r in reviews if r.get("user", {}).get("login") == username)
+
+        contributors_stats.append({
+            "username": username,
+            "commits": commit_count,
+            "prs": pr_count,
+            "reviews": review_count,
+        })
+
+    return {"contributors": contributors_stats}
+
+
+@app.get("/repo/team-activity")
+async def get_team_activity(
+    owner: str = Query(...),
+    repo: str = Query(...),
+    time_range: str = Query("week", regex="^(week|month|quarter)$")
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_date_bins(period: str):
+        now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        bins = []
+
+        if period == "week":
+            for i in range(7):
+                day = now - timedelta(days=6 - i)
+                bins.append(day.date())
+        elif period == "month":
+            for i in range(4):
+                week_start = now - timedelta(days=(21 - i * 7))
+                bins.append(week_start.date())
+        elif period == "quarter":
+            for i in range(12):
+                week_start = now - timedelta(days=(77 - i * 7))
+                bins.append(week_start.date())
+
+        return bins
+
+    def bin_label(date_obj):
+        return date_obj.strftime("%Y-%m-%d")
+
+    bins = get_date_bins(time_range)
+    bin_labels = [bin_label(d) for d in bins]
+    activity = {label: {"label": label, "commits": 0, "prs": 0, "reviews": 0} for label in bin_labels}
+
+    # Helper: find bin for a date
+    def find_bin(date_str):
+        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").date()
+        for d in reversed(bins):
+            if date_obj >= d:
+                return bin_label(d)
+        return None
+
+    # Commits
+    commits_url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    url = commits_url
+    params = {"since": bins[0].isoformat(), "per_page": 100}
+    while url:
+        resp = requests.get(url, headers=headers, params=params)
+        if not resp.ok:
+            break
+        for c in resp.json():
+            ts = c.get("commit", {}).get("author", {}).get("date")
+            b = find_bin(ts) if ts else None
+            if b:
+                activity[b]["commits"] += 1
+        url = resp.links["next"]["url"] if "next" in resp.links else None
+        params = None
+
+    # PRs
+    pr_q = f"repo:{owner}/{repo} type:pr created:>={bins[0].isoformat()}"
+    pr_url = f"https://api.github.com/search/issues?q={pr_q}&per_page=100"
+    resp = requests.get(pr_url, headers=headers)
+    for pr in resp.json().get("items", []):
+        b = find_bin(pr.get("created_at"))
+        if b:
+            activity[b]["prs"] += 1
+
+    # Reviews (optional — approximated via PR list)
+    for pr in resp.json().get("items", []):
+        pr_number = pr["number"]
+        rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        rev_resp = requests.get(rev_url, headers=headers)
+        if not rev_resp.ok:
+            continue
+        for review in rev_resp.json():
+            b = find_bin(review.get("submitted_at"))
+            if b:
+                activity[b]["reviews"] += 1
+
+    return {"timeline": list(activity.values())}
+
+
+@app.get("/repo/recent-activity")
+async def get_recent_activity(
+    owner: str = Query(..., description="GitHub repo owner"),
+    repo: str = Query(..., description="GitHub repo name")
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    activity_log = []
+
+    # --- Commits ---
+    commit_url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=5"
+    commit_resp = requests.get(commit_url, headers=headers)
+    if commit_resp.ok:
+        for commit in commit_resp.json():
+            ts = commit["commit"]["author"]["date"]
+            msg = commit["commit"]["message"].split("\n")[0]
+            author = commit["commit"]["author"]["name"]
+            activity_log.append({
+                "type": "commit",
+                "username": author,
+                "message": msg,
+                "timestamp": ts
+            })
+
+    # --- PRs ---
+    pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=all&per_page=5"
+    pr_resp = requests.get(pr_url, headers=headers)
+    if pr_resp.ok:
+        for pr in pr_resp.json():
+            activity_log.append({
+                "type": "pr",
+                "username": pr["user"]["login"],
+                "message": f"{pr['user']['login']} {pr['state']} PR: {pr['title']}",
+                "timestamp": pr["created_at"]
+            })
+
+    # --- Reviews ---
+    # We'll fetch reviews of the last 5 PRs only to limit requests
+    for pr in pr_resp.json()[:5]:
+        pr_number = pr["number"]
+        rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        rev_resp = requests.get(rev_url, headers=headers)
+        if rev_resp.ok:
+            for review in rev_resp.json():
+                if review.get("submitted_at"):
+                    activity_log.append({
+                        "type": "review",
+                        "username": review["user"]["login"],
+                        "message": f"{review['user']['login']} reviewed PR #{pr_number}",
+                        "timestamp": review["submitted_at"]
+                    })
+
+    # Sort all activity by timestamp descending
+    activity_log.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    # Return last 5 entries
+    return {"activity": activity_log[:5]}
+
+
+# --- Health Check Endpoint (as before) ---
+@app.get("/health", summary="Health Check", description="Simple health check endpoint.")
+async def health_check():
+    logger.info("Health check endpoint was called.")
+    return {"status": "ok"}
+
+@app.websocket_route("/ws-dev")
+async def websocket_endpoint(scope: Scope, receive: Receive, send: Send):
+    await ws_handler.handle_websocket(scope, receive, send)
+
+
+# --- How to Run (as before) ---
 # uvicorn app:app --host 0.0.0.0 --port 8003 --reload
