@@ -513,6 +513,72 @@ async def get_team_activity(
     return {"timeline": list(activity.values())}
 
 
+@app.get("/repo/recent-activity")
+async def get_recent_activity(
+    owner: str = Query(..., description="GitHub repo owner"),
+    repo: str = Query(..., description="GitHub repo name")
+):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise HTTPException(status_code=500, detail="GitHub token not set.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    activity_log = []
+
+    # --- Commits ---
+    commit_url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=5"
+    commit_resp = requests.get(commit_url, headers=headers)
+    if commit_resp.ok:
+        for commit in commit_resp.json():
+            ts = commit["commit"]["author"]["date"]
+            msg = commit["commit"]["message"].split("\n")[0]
+            author = commit["commit"]["author"]["name"]
+            activity_log.append({
+                "type": "commit",
+                "username": author,
+                "message": msg,
+                "timestamp": ts
+            })
+
+    # --- PRs ---
+    pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=all&per_page=5"
+    pr_resp = requests.get(pr_url, headers=headers)
+    if pr_resp.ok:
+        for pr in pr_resp.json():
+            activity_log.append({
+                "type": "pr",
+                "username": pr["user"]["login"],
+                "message": f"{pr['user']['login']} {pr['state']} PR: {pr['title']}",
+                "timestamp": pr["created_at"]
+            })
+
+    # --- Reviews ---
+    # We'll fetch reviews of the last 5 PRs only to limit requests
+    for pr in pr_resp.json()[:5]:
+        pr_number = pr["number"]
+        rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        rev_resp = requests.get(rev_url, headers=headers)
+        if rev_resp.ok:
+            for review in rev_resp.json():
+                if review.get("submitted_at"):
+                    activity_log.append({
+                        "type": "review",
+                        "username": review["user"]["login"],
+                        "message": f"{review['user']['login']} reviewed PR #{pr_number}",
+                        "timestamp": review["submitted_at"]
+                    })
+
+    # Sort all activity by timestamp descending
+    activity_log.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    # Return last 5 entries
+    return {"activity": activity_log[:5]}
+
+
 # --- Health Check Endpoint (as before) ---
 @app.get("/health", summary="Health Check", description="Simple health check endpoint.")
 async def health_check():
