@@ -634,7 +634,8 @@ async def get_recent_activity(
                 "type": "commit",
                 "username": author,
                 "message": msg,
-                "timestamp": ts
+                "timestamp": ts,
+                "url": commit.get("html_url")
             })
 
     # --- PRs ---
@@ -646,7 +647,8 @@ async def get_recent_activity(
                 "type": "pr",
                 "username": pr["user"]["login"],
                 "message": f"{pr['user']['login']} {pr['state']} PR: {pr['title']}",
-                "timestamp": pr["created_at"]
+                "timestamp": pr["created_at"],
+                "url": pr["html_url"]
             })
 
     # --- Reviews ---
@@ -662,7 +664,8 @@ async def get_recent_activity(
                         "type": "review",
                         "username": review["user"]["login"],
                         "message": f"{review['user']['login']} reviewed PR #{pr_number}",
-                        "timestamp": review["submitted_at"]
+                        "timestamp": review["submitted_at"],
+                        "url": f"https://github.com/{owner}/{repo}/pull/{pr_number}#pullrequestreview-{review['id']}"
                     })
 
     # Sort all activity by timestamp descending
