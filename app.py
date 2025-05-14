@@ -18,6 +18,7 @@ from datetime import datetime, timedelta  # Ensure datetime is imported
 
 from starlette.responses import JSONResponse
 
+from utils.cache import get_cache_path, load_from_cache, save_to_cache
 from websocket_handler import WebSocketHandler
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
@@ -613,6 +614,10 @@ async def get_repo_stats(
 ):
     logger.info(f"Fetching repo stats for {owner}/{repo}.")
 
+    cache_path = get_cache_path("repo_stats", owner, repo, range)
+    if cached := load_from_cache(cache_path):
+        return cached
+
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise HTTPException(status_code=500, detail="GitHub token not set in environment.")
@@ -718,12 +723,15 @@ async def get_repo_stats(
         }
 
     try:
-        return {
-            "commits": build_summary("Commits", ""),  # handled separately
+        result = {
+            "commits": build_summary("Commits", ""),
             "prs": build_summary("Pull Requests", f"repo:{owner}/{repo}+type:pr+created:{{start}}..{{end}}"),
             "issues": build_summary("Issues", f"repo:{owner}/{repo}+type:issue+created:{{start}}..{{end}}"),
-            "reviews": build_summary("Reviews", ""),  # handled separately
+            "reviews": build_summary("Reviews", "")
         }
+
+        save_to_cache(cache_path, result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching stats for {owner}/{repo}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch repository stats.")
@@ -736,6 +744,12 @@ async def get_top_contributors_stats(
         range: str = Query("week", regex="^(week|month|quarter)$"),
         limit: int = Query(10)
 ):
+    logger.info(f"Fetching contributor stats for {owner}/{repo}.")
+
+    cache_path = get_cache_path("contributor_stats", owner, repo, range)
+    if cached := load_from_cache(cache_path):
+        return cached
+
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise HTTPException(status_code=500, detail="GitHub token not set.")
@@ -818,7 +832,9 @@ async def get_top_contributors_stats(
             "reviews": review_count,
         })
 
-    return {"contributors": contributors_stats}
+    result = {"contributors": contributors_stats}
+    save_to_cache(cache_path, result)
+    return result
 
 
 @app.get("/repo/team-activity")
@@ -827,6 +843,12 @@ async def get_team_activity(
     repo: str = Query(...),
     time_range: str = Query("week", regex="^(week|month|quarter)$")
 ):
+    logger.info(f"Fetching team activity for {owner}/{repo}.")
+
+    cache_path = get_cache_path("team-activity", owner, repo, time_range)
+    if cached := load_from_cache(cache_path):
+        return cached
+
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise HTTPException(status_code=500, detail="GitHub token not set.")
@@ -907,7 +929,9 @@ async def get_team_activity(
             if b:
                 activity[b]["reviews"] += 1
 
-    return {"timeline": list(activity.values())}
+    result = {"timeline": list(activity.values())}
+    save_to_cache(cache_path, result)
+    return result
 
 
 @app.get("/repo/recent-activity")
@@ -915,6 +939,12 @@ async def get_recent_activity(
     owner: str = Query(..., description="GitHub repo owner"),
     repo: str = Query(..., description="GitHub repo name")
 ):
+    logger.info(f"Fetching recent-activity for {owner}/{repo}.")
+
+    cache_path = get_cache_path("recent-activity", owner, repo, '')
+    if cached := load_from_cache(cache_path):
+        return cached
+
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise HTTPException(status_code=500, detail="GitHub token not set.")
@@ -957,7 +987,7 @@ async def get_recent_activity(
 
     # --- Reviews ---
     # We'll fetch reviews of the last 5 PRs only to limit requests
-    for pr in pr_resp.json()[:5]:
+    for pr in pr_resp.json()[:10]:
         pr_number = pr["number"]
         rev_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
         rev_resp = requests.get(rev_url, headers=headers)
@@ -975,11 +1005,83 @@ async def get_recent_activity(
     # Sort all activity by timestamp descending
     activity_log.sort(key=lambda x: x["timestamp"], reverse=True)
 
-    # Return last 5 entries
-    return {"activity": activity_log[:5]}
+    # Return last 10 entries
+    result = {"activity": activity_log[:10]}
+    save_to_cache(cache_path, result)
+    return result
 
 
+@app.get("/repo/builds")
+async def get_builds(
+        owner: str = Query(...),
+        repo: str = Query(...),
+        range: str = Query("week", regex="^(week|month|quarter)$")
+):
+    logger.info(f"Fetching builds for {owner}/{repo}.")
 
+    cache_path = get_cache_path("builds", owner, repo, range)
+    if cached := load_from_cache(cache_path):
+        return cached
+
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    def get_time_range(period: str) -> tuple[str, str]:
+        now = datetime.utcnow()
+        if period == "week":
+            start = now - timedelta(weeks=1)
+        elif period == "month":
+            start = now - relativedelta(months=1)
+        elif period == "quarter":
+            start = now - relativedelta(months=3)
+        return start.isoformat(), now.isoformat()
+
+    since_iso, until_iso = get_time_range(range)
+    since = datetime.fromisoformat(since_iso)
+    until = datetime.fromisoformat(until_iso)
+
+    builds = []
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=100"
+
+    while url:
+        response = requests.get(url, headers=headers)
+        if not response.ok:
+            raise HTTPException(status_code=500, detail="GitHub API error")
+
+        runs = response.json().get("workflow_runs", [])
+        for run in runs:
+            started_at_str = run.get("run_started_at")
+            if not started_at_str:
+                continue
+
+            try:
+                started_at = datetime.fromisoformat(started_at_str[:-1])
+            except Exception:
+                continue
+
+            if started_at < since:
+                url = None  # Stop paginating if we've gone beyond the range
+                break
+
+            if started_at <= until:
+                builds.append({
+                    "id": run["id"],
+                    "status": run.get("conclusion"),
+                    "duration_seconds": (
+                            datetime.fromisoformat(run["updated_at"][:-1]) - started_at
+                    ).seconds,
+                    "started_at": started_at_str,
+                    "build_url": run["html_url"],
+                    "triggered_by": run["actor"]["login"] if run.get("actor") else "unknown"
+                })
+
+        if url:  # Only fetch next page if still paginating
+            url = response.links.get("next", {}).get("url")
+
+    save_to_cache(cache_path, {"builds": builds})
+    return {"builds": builds}
 
 
 # --- Dummy login endpoint ---
@@ -1067,69 +1169,3 @@ async def list_repository_issues_endpoint(
     except Exception as e:
         logger.error(f"Unexpected error fetching issues for {repo_owner}/{repo_name}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {type(e).__name__}")
-
-
-@app.get("/repo/builds")
-async def get_builds(
-    owner: str = Query(...),
-    repo: str = Query(...),
-    range: str = Query("week", regex="^(week|month|quarter)$")
-):
-    headers = {
-        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    def get_time_range(period: str) -> tuple[str, str]:
-        now = datetime.utcnow()
-        if period == "week":
-            start = now - timedelta(weeks=1)
-        elif period == "month":
-            start = now - relativedelta(months=1)
-        elif period == "quarter":
-            start = now - relativedelta(months=3)
-        return start.isoformat(), now.isoformat()
-
-    since_iso, until_iso = get_time_range(range)
-    since = datetime.fromisoformat(since_iso)
-    until = datetime.fromisoformat(until_iso)
-
-    builds = []
-    url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=100"
-
-    while url:
-        response = requests.get(url, headers=headers)
-        if not response.ok:
-            raise HTTPException(status_code=500, detail="GitHub API error")
-
-        runs = response.json().get("workflow_runs", [])
-        for run in runs:
-            started_at_str = run.get("run_started_at")
-            if not started_at_str:
-                continue
-
-            try:
-                started_at = datetime.fromisoformat(started_at_str[:-1])
-            except Exception:
-                continue
-
-            if started_at < since:
-                url = None  # Stop paginating if we've gone beyond the range
-                break
-
-            if started_at <= until:
-                builds.append({
-                    "id": run["id"],
-                    "status": run.get("conclusion"),
-                    "duration_seconds": (
-                        datetime.fromisoformat(run["updated_at"][:-1]) - started_at
-                    ).seconds,
-                    "started_at": started_at_str,
-                    "build_url": run["html_url"],
-                    "triggered_by": run["actor"]["login"] if run.get("actor") else "unknown"
-                })
-
-        if url:  # Only fetch next page if still paginating
-            url = response.links.get("next", {}).get("url")
-
-    return builds
